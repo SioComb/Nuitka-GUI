@@ -1,0 +1,20 @@
+[project]
+name = "nuitka-gui"
+version = "0.1.0"
+description = "Flet-based GUI for generating and running Nuitka build commands."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+keywords = ["nuitka", "flet", "gui", "build"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "flet[desktop]>=0.85.1",
+    "nuitka>=4.1",
+]
