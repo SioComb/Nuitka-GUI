@@ -1,21 +1,44 @@
+# -*- coding: utf-8 -*-
+"""NuitkaのビルドコマンドをGUIで生成・実行するアプリ."""
+
 from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-import sys
 
 import flet as ft
 
 
 DataType = Literal["file", "dir"]
+GuiFramework = Literal["none", "tkinter", "customtkinter", "flet"]
+
+
+# GUIライブラリごとに必要なNuitkaオプションをまとめる。
+GUI_OPTION_PRESETS: dict[GuiFramework, list[str]] = {
+    "none": [],
+    "tkinter": ["--enable-plugin=tk-inter"],
+    "customtkinter": [
+        "--enable-plugin=tk-inter",
+        "--include-package-data=customtkinter",
+    ],
+    "flet": [
+        "--include-package=flet",
+        "--include-package=flet_desktop",
+        "--include-package-data=flet",
+        "--include-package-data=flet_desktop",
+    ],
+}
 
 
 @dataclass
 class DataEntry:
+    """同梱するデータファイルまたはフォルダの設定."""
+
     kind: DataType
     src: Path
     dest: str
@@ -23,6 +46,8 @@ class DataEntry:
 
 @dataclass
 class AppState:
+    """画面入力のうちファイル選択系の状態."""
+
     script_path: Path | None = None
     icon_path: Path | None = None
     output_dir: Path | None = None
@@ -34,15 +59,19 @@ class AppState:
 
 
 class NuitkaBuildGUI:
+    """FletでNuitkaビルド用の入力画面を構成する."""
+
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self.state = AppState()
 
+        # ウィンドウとページ全体の基本設定。
         self.page.title = "Nuitka Build GUI"
         self.page.window.width = 1100
         self.page.window.height = 900
         self.page.scroll = ft.ScrollMode.AUTO
 
+        # 入力状態とエラーを画面に表示するコントロール。
         self.script_path_text = ft.Text("未選択", selectable=True)
         self.icon_path_text = ft.Text("未選択", selectable=True)
         self.output_dir_text = ft.Text("未選択", selectable=True)
@@ -57,7 +86,7 @@ class NuitkaBuildGUI:
                 ft.dropdown.Option("onefile"),
                 ft.dropdown.Option("accelerated"),
             ],
-            on_change=self.on_setting_changed,
+            on_select=self.on_setting_changed,
         )
         self.console_mode_dropdown = ft.Dropdown(
             label="Windowsコンソール設定",
@@ -68,7 +97,7 @@ class NuitkaBuildGUI:
                 ft.dropdown.Option("attach"),
                 ft.dropdown.Option("hide"),
             ],
-            on_change=self.on_setting_changed,
+            on_select=self.on_setting_changed,
         )
         self.compiler_dropdown = ft.Dropdown(
             label="コンパイラ設定",
@@ -80,7 +109,19 @@ class NuitkaBuildGUI:
                 ft.dropdown.Option("clang", "Clang"),
                 ft.dropdown.Option("zig", "Zig"),
             ],
-            on_change=self.on_setting_changed,
+            on_select=self.on_setting_changed,
+        )
+        self.gui_framework_dropdown = ft.Dropdown(
+            label="GUIライブラリ",
+            value="none",
+            options=[
+                ft.dropdown.Option("none", "なし"),
+                ft.dropdown.Option("tkinter", "tkinter"),
+                ft.dropdown.Option("customtkinter", "customtkinter"),
+                ft.dropdown.Option("flet", "Flet"),
+            ],
+            tooltip="選択したGUIライブラリ向けのNuitkaオプションを追加します。",
+            on_select=self.on_gui_framework_changed,
         )
 
         self.output_filename_field = ft.TextField(
@@ -128,26 +169,14 @@ class NuitkaBuildGUI:
 
         self.run_button = ft.ElevatedButton("実行", on_click=self.run_nuitka)
 
-        self.script_picker = ft.FilePicker(on_result=self.on_script_picked)
-        self.icon_picker = ft.FilePicker(on_result=self.on_icon_picked)
-        self.output_dir_picker = ft.FilePicker(on_result=self.on_output_dir_picked)
-        self.data_file_picker = ft.FilePicker(on_result=self.on_data_file_picked)
-        self.data_dir_picker = ft.FilePicker(on_result=self.on_data_dir_picked)
-
-        self.page.overlay.extend(
-            [
-                self.script_picker,
-                self.icon_picker,
-                self.output_dir_picker,
-                self.data_file_picker,
-                self.data_dir_picker,
-            ]
-        )
+        self.file_picker = ft.FilePicker()
 
         self.build_ui()
         self.update_command_preview()
 
     def build_ui(self) -> None:
+        """画面に表示するコントロールを配置する."""
+
         self.page.add(
             ft.Text("Nuitka Build GUI", size=28, weight=ft.FontWeight.BOLD),
             ft.Divider(),
@@ -156,11 +185,7 @@ class NuitkaBuildGUI:
                 [
                     ft.ElevatedButton(
                         "Pythonスクリプトを選択",
-                        on_click=lambda _: self.script_picker.pick_files(
-                            allow_multiple=False,
-                            file_type=ft.FilePickerFileType.CUSTOM,
-                            allowed_extensions=["py"],
-                        ),
+                        on_click=self.pick_script,
                     ),
                     self.script_path_text,
                 ]
@@ -172,11 +197,7 @@ class NuitkaBuildGUI:
                 [
                     ft.ElevatedButton(
                         "アイコンを選択",
-                        on_click=lambda _: self.icon_picker.pick_files(
-                            allow_multiple=False,
-                            file_type=ft.FilePickerFileType.CUSTOM,
-                            allowed_extensions=["ico", "png"],
-                        ),
+                        on_click=self.pick_icon,
                     ),
                     self.icon_path_text,
                 ]
@@ -187,13 +208,16 @@ class NuitkaBuildGUI:
                     self.output_filename_field,
                     ft.ElevatedButton(
                         "出力先フォルダを選択",
-                        on_click=lambda _: self.output_dir_picker.get_directory_path(),
+                        on_click=self.pick_output_dir,
                     ),
                     self.output_dir_text,
                 ]
             ),
-            ft.Text("6-8. よく使うオプション / コンパイラ / jobs", weight=ft.FontWeight.BOLD),
-            ft.Row([self.compiler_dropdown, self.jobs_field]),
+            ft.Text("6-8. よく使うオプション / コンパイラ / GUI / jobs", weight=ft.FontWeight.BOLD),
+            ft.Row(
+                [self.compiler_dropdown, self.gui_framework_dropdown, self.jobs_field],
+                wrap=True,
+            ),
             ft.ResponsiveRow(
                 controls=[
                     ft.Container(self.cb_remove_output, col={"sm": 6, "md": 4}),
@@ -209,11 +233,11 @@ class NuitkaBuildGUI:
                 [
                     ft.ElevatedButton(
                         "データファイル追加",
-                        on_click=lambda _: self.data_file_picker.pick_files(allow_multiple=False),
+                        on_click=self.pick_data_file,
                     ),
                     ft.ElevatedButton(
                         "データフォルダ追加",
-                        on_click=lambda _: self.data_dir_picker.get_directory_path(),
+                        on_click=self.pick_data_dir,
                     ),
                 ]
             ),
@@ -235,10 +259,34 @@ class NuitkaBuildGUI:
     def on_setting_changed(self, _: ft.ControlEvent) -> None:
         self.update_command_preview()
 
-    def on_script_picked(self, e: ft.FilePickerResultEvent) -> None:
-        if not e.files:
+    def on_gui_framework_changed(self, _: ft.ControlEvent) -> None:
+        """GUIライブラリ選択時にコンソール設定とプレビューを更新する."""
+
+        if (
+            self.gui_framework_dropdown.value != "none"
+            and self.console_mode_dropdown.value == "force"
+        ):
+            self.console_mode_dropdown.value = "disable"
+        self.update_command_preview()
+
+    def get_selected_file_path(self, files: list[ft.FilePickerFile]) -> Path | None:
+        """FilePickerの結果からローカルパスを取り出す."""
+
+        if not files or files[0].path is None:
+            self.error_text.value = "Error: selected file path is unavailable."
+            self.page.update()
+            return None
+        return Path(files[0].path)
+
+    async def pick_script(self, _: ft.ControlEvent) -> None:
+        files = await self.file_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["py"],
+        )
+        path = self.get_selected_file_path(files)
+        if path is None:
             return
-        path = Path(e.files[0].path)
         if path.suffix.lower() != ".py":
             self.error_text.value = "エラー: .py ファイルを選択してください。"
             self.page.update()
@@ -248,10 +296,15 @@ class NuitkaBuildGUI:
         self.error_text.value = ""
         self.update_command_preview()
 
-    def on_icon_picked(self, e: ft.FilePickerResultEvent) -> None:
-        if not e.files:
+    async def pick_icon(self, _: ft.ControlEvent) -> None:
+        files = await self.file_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["ico", "png"],
+        )
+        path = self.get_selected_file_path(files)
+        if path is None:
             return
-        path = Path(e.files[0].path)
         if path.suffix.lower() not in {".ico", ".png"}:
             self.error_text.value = "エラー: .ico または .png を選択してください。"
             self.page.update()
@@ -261,30 +314,35 @@ class NuitkaBuildGUI:
         self.error_text.value = ""
         self.update_command_preview()
 
-    def on_output_dir_picked(self, e: ft.FilePickerResultEvent) -> None:
-        if not e.path:
+    async def pick_output_dir(self, _: ft.ControlEvent) -> None:
+        path = await self.file_picker.get_directory_path()
+        if not path:
             return
-        self.state.output_dir = Path(e.path)
+        self.state.output_dir = Path(path)
         self.output_dir_text.value = str(self.state.output_dir)
         self.update_command_preview()
 
-    def on_data_file_picked(self, e: ft.FilePickerResultEvent) -> None:
-        if not e.files:
+    async def pick_data_file(self, _: ft.ControlEvent) -> None:
+        files = await self.file_picker.pick_files(allow_multiple=False)
+        src = self.get_selected_file_path(files)
+        if src is None:
             return
-        src = Path(e.files[0].path)
         self.state.data_entries.append(DataEntry(kind="file", src=src, dest=src.name))
         self.refresh_data_list()
         self.update_command_preview()
 
-    def on_data_dir_picked(self, e: ft.FilePickerResultEvent) -> None:
-        if not e.path:
+    async def pick_data_dir(self, _: ft.ControlEvent) -> None:
+        path = await self.file_picker.get_directory_path()
+        if not path:
             return
-        src = Path(e.path)
+        src = Path(path)
         self.state.data_entries.append(DataEntry(kind="dir", src=src, dest=src.name))
         self.refresh_data_list()
         self.update_command_preview()
 
     def refresh_data_list(self) -> None:
+        """追加済みデータ項目の一覧を再描画する."""
+
         self.data_list_view.controls.clear()
         for idx, entry in enumerate(self.state.data_entries):
             option_text = (
@@ -313,6 +371,8 @@ class NuitkaBuildGUI:
             self.update_command_preview()
 
     def validate_inputs(self) -> tuple[bool, str]:
+        """ビルド前に必須入力と数値入力を検証する."""
+
         if self.state.script_path is None:
             return False, "エラー: Pythonスクリプトを選択してください。"
         if self.state.script_path.suffix.lower() != ".py":
@@ -325,6 +385,8 @@ class NuitkaBuildGUI:
         return True, ""
 
     def get_output_filename(self) -> str | None:
+        """出力ファイル名を.exe付きで返す."""
+
         if self.state.script_path is None:
             return None
         entered = self.output_filename_field.value.strip()
@@ -335,6 +397,8 @@ class NuitkaBuildGUI:
         return entered
 
     def build_command(self) -> list[str]:
+        """現在の画面入力からNuitka実行コマンドを組み立てる."""
+
         if self.state.script_path is None:
             return [sys.executable, "-m", "nuitka"]
 
@@ -347,6 +411,7 @@ class NuitkaBuildGUI:
         }
         cmd.append(mode_map[self.mode_dropdown.value])
         cmd.append(f"--windows-console-mode={self.console_mode_dropdown.value}")
+        cmd.extend(self.get_gui_framework_options())
 
         if self.state.icon_path:
             cmd.append(f"--windows-icon-from-ico={str(self.state.icon_path)}")
@@ -399,11 +464,21 @@ class NuitkaBuildGUI:
         cmd.append(str(self.state.script_path))
         return cmd
 
+    def get_gui_framework_options(self) -> list[str]:
+        """選択中のGUIライブラリに対応するNuitkaオプションを返す."""
+
+        framework = self.gui_framework_dropdown.value
+        if framework in GUI_OPTION_PRESETS:
+            return GUI_OPTION_PRESETS[framework]
+        return []
+
     def quote_for_preview(self, cmd: list[str]) -> str:
-        # Windows向けの安全なクォート
+        # Windows向けの安全なクォート。
         return subprocess.list2cmdline(cmd)
 
     def update_command_preview(self) -> None:
+        """入力検証の結果に合わせてコマンドプレビューを更新する."""
+
         valid, msg = self.validate_inputs()
         if not valid and self.state.script_path is None:
             self.command_preview.value = "スクリプトを選択するとコマンドが表示されます。"
@@ -415,9 +490,11 @@ class NuitkaBuildGUI:
             self.error_text.value = ""
             cmd = self.build_command()
             self.command_preview.value = self.quote_for_preview(cmd)
-        self.page.update()
+            self.page.update()
 
     def run_nuitka(self, _: ft.ControlEvent) -> None:
+        """ビルド処理をバックグラウンドスレッドで開始する."""
+
         valid, msg = self.validate_inputs()
         if not valid:
             self.error_text.value = msg
@@ -436,6 +513,8 @@ class NuitkaBuildGUI:
         thread.start()
 
     def _execute_build(self, cmd: list[str]) -> None:
+        """Nuitkaを実行し、標準出力をログ欄へ反映する."""
+
         try:
             self.page.run_thread(lambda: self.add_log("[CMD] " + self.quote_for_preview(cmd)))
             proc = subprocess.Popen(
