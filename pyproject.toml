@@ -15,6 +15,9 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
-    "flet[desktop]>=0.85.1",
+    "flet[all,desktop]>=0.85.1",
     "nuitka>=4.1",
+    "ruff>=0.15.14",
+    "requests>=2.31.0,<3",
+    "pip>=26.1.1",
 ]
