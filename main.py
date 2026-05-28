@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """NuitkaのビルドコマンドをGUIで生成・実行するアプリ."""
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from pathlib import Path
 from typing import Literal
 
 import flet as ft
-
 
 DataType = Literal["file", "dir"]
 GuiFramework = Literal["none", "tkinter", "customtkinter", "flet"]
@@ -70,6 +68,7 @@ class NuitkaBuildGUI:
         self.page.window.width = 1100
         self.page.window.height = 900
         self.page.scroll = ft.ScrollMode.AUTO
+        self.page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
 
         # 入力状態とエラーを画面に表示するコントロール。
         self.script_path_text = ft.Text("未選択", selectable=True)
@@ -83,7 +82,7 @@ class NuitkaBuildGUI:
             value="standalone",
             options=[
                 ft.dropdown.Option("standalone"),
-                ft.dropdown.Option("onefile"),
+                ft.dropdown.Option("onefile", "onefile (standalone含む)"),
                 ft.dropdown.Option("accelerated"),
             ],
             on_select=self.on_setting_changed,
@@ -140,10 +139,16 @@ class NuitkaBuildGUI:
             on_change=self.on_setting_changed,
         )
 
-        self.cb_remove_output = ft.Checkbox(label="remove output", on_change=self.on_setting_changed)
-        self.cb_assume_yes = ft.Checkbox(label="assume yes for downloads", on_change=self.on_setting_changed)
+        self.cb_remove_output = ft.Checkbox(
+            label="remove output", on_change=self.on_setting_changed
+        )
+        self.cb_assume_yes = ft.Checkbox(
+            label="assume yes for downloads", on_change=self.on_setting_changed
+        )
         self.cb_low_memory = ft.Checkbox(label="low memory", on_change=self.on_setting_changed)
-        self.cb_show_progress = ft.Checkbox(label="show progress", on_change=self.on_setting_changed)
+        self.cb_show_progress = ft.Checkbox(
+            label="show progress", on_change=self.on_setting_changed
+        )
         self.cb_show_memory = ft.Checkbox(label="show memory", on_change=self.on_setting_changed)
         self.cb_deployment = ft.Checkbox(label="deployment mode", on_change=self.on_setting_changed)
 
@@ -166,6 +171,11 @@ class NuitkaBuildGUI:
         )
 
         self.data_list_view = ft.ListView(expand=False, spacing=6, height=180)
+        self.output_filename_field.expand = True
+        self.jobs_field.expand = True
+        self.extra_options_field.expand = True
+        self.command_preview.expand = True
+        self.log_view.expand = True
 
         self.run_button = ft.ElevatedButton("実行", on_click=self.run_nuitka)
 
@@ -180,7 +190,7 @@ class NuitkaBuildGUI:
         self.page.add(
             ft.Text("Nuitka Build GUI", size=28, weight=ft.FontWeight.BOLD),
             ft.Divider(),
-            ft.Text("1. スクリプト選択", weight=ft.FontWeight.BOLD),
+            ft.Text("1. Pythonスクリプト選択", weight=ft.FontWeight.BOLD),
             ft.Row(
                 [
                     ft.ElevatedButton(
@@ -188,10 +198,11 @@ class NuitkaBuildGUI:
                         on_click=self.pick_script,
                     ),
                     self.script_path_text,
-                ]
+                ],
+                wrap=True,
             ),
             ft.Text("2-3. ビルド方式 / Windowsコンソール設定", weight=ft.FontWeight.BOLD),
-            ft.Row([self.mode_dropdown, self.console_mode_dropdown]),
+            ft.Row([self.mode_dropdown, self.console_mode_dropdown], wrap=True),
             ft.Text("4. アイコン選択", weight=ft.FontWeight.BOLD),
             ft.Row(
                 [
@@ -200,24 +211,33 @@ class NuitkaBuildGUI:
                         on_click=self.pick_icon,
                     ),
                     self.icon_path_text,
-                ]
-            ),
-            ft.Text("5. 出力設定", weight=ft.FontWeight.BOLD),
-            ft.Row(
-                [
-                    self.output_filename_field,
-                    ft.ElevatedButton(
-                        "出力先フォルダを選択",
-                        on_click=self.pick_output_dir,
-                    ),
-                    self.output_dir_text,
-                ]
-            ),
-            ft.Text("6-8. よく使うオプション / コンパイラ / GUI / jobs", weight=ft.FontWeight.BOLD),
-            ft.Row(
-                [self.compiler_dropdown, self.gui_framework_dropdown, self.jobs_field],
+                ],
                 wrap=True,
             ),
+            ft.Text("5. 出力設定", weight=ft.FontWeight.BOLD),
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "出力先フォルダを選択",
+                                on_click=self.pick_output_dir,
+                            ),
+                            self.output_dir_text,
+                        ],
+                        wrap=True,
+                    ),
+                    self.output_filename_field,
+                ],
+                spacing=8,
+            ),
+            ft.Text("6. コンパイラ設定", weight=ft.FontWeight.BOLD),
+            self.compiler_dropdown,
+            ft.Text("7. GUIライブラリ", weight=ft.FontWeight.BOLD),
+            self.gui_framework_dropdown,
+            ft.Text("8. jobs", weight=ft.FontWeight.BOLD),
+            self.jobs_field,
+            ft.Text("9. よく使うオプション", weight=ft.FontWeight.BOLD),
             ft.ResponsiveRow(
                 controls=[
                     ft.Container(self.cb_remove_output, col={"sm": 6, "md": 4}),
@@ -228,7 +248,7 @@ class NuitkaBuildGUI:
                     ft.Container(self.cb_deployment, col={"sm": 6, "md": 4}),
                 ]
             ),
-            ft.Text("9. データファイル指定", weight=ft.FontWeight.BOLD),
+            ft.Text("10. データファイル指定", weight=ft.FontWeight.BOLD),
             ft.Row(
                 [
                     ft.ElevatedButton(
@@ -239,15 +259,16 @@ class NuitkaBuildGUI:
                         "データフォルダ追加",
                         on_click=self.pick_data_dir,
                     ),
-                ]
+                ],
+                wrap=True,
             ),
-            self.data_list_view,
-            ft.Text("10. 追加オプション", weight=ft.FontWeight.BOLD),
+            ft.Container(self.data_list_view, expand=True),
+            ft.Text("11. 追加オプション", weight=ft.FontWeight.BOLD),
             self.extra_options_field,
-            ft.Text("11. コマンドプレビュー", weight=ft.FontWeight.BOLD),
+            ft.Text("12. コマンドプレビュー", weight=ft.FontWeight.BOLD),
             self.command_preview,
-            ft.Text("12. 実行", weight=ft.FontWeight.BOLD),
-            ft.Row([self.run_button, self.status_text]),
+            ft.Text("13. 実行", weight=ft.FontWeight.BOLD),
+            ft.Row([self.run_button, self.status_text], wrap=True),
             self.error_text,
             self.log_view,
         )
@@ -379,9 +400,8 @@ class NuitkaBuildGUI:
             return False, "エラー: 選択したファイルが .py ではありません。"
 
         jobs_text = self.jobs_field.value.strip()
-        if jobs_text:
-            if not jobs_text.isdigit() or int(jobs_text) <= 0:
-                return False, "エラー: jobs は正の整数で入力してください。"
+        if jobs_text and (not jobs_text.isdigit() or int(jobs_text) <= 0):
+            return False, "エラー: jobs は正の整数で入力してください。"
         return True, ""
 
     def get_output_filename(self) -> str | None:
@@ -404,24 +424,19 @@ class NuitkaBuildGUI:
 
         cmd: list[str] = [sys.executable, "-m", "nuitka"]
 
-        mode_map = {
-            "standalone": "--mode=standalone",
-            "onefile": "--mode=onefile",
-            "accelerated": "--mode=accelerated",
-        }
-        cmd.append(mode_map[self.mode_dropdown.value])
+        cmd.extend(self.get_mode_options())
         cmd.append(f"--windows-console-mode={self.console_mode_dropdown.value}")
         cmd.extend(self.get_gui_framework_options())
 
         if self.state.icon_path:
-            cmd.append(f"--windows-icon-from-ico={str(self.state.icon_path)}")
+            cmd.append(f"--windows-icon-from-ico={self.state.icon_path!s}")
 
         output_filename = self.get_output_filename()
         if output_filename:
             cmd.append(f"--output-filename={output_filename}")
 
         if self.state.output_dir:
-            cmd.append(f"--output-dir={str(self.state.output_dir)}")
+            cmd.append(f"--output-dir={self.state.output_dir!s}")
 
         if self.cb_remove_output.value:
             cmd.append("--remove-output")
@@ -463,6 +478,16 @@ class NuitkaBuildGUI:
 
         cmd.append(str(self.state.script_path))
         return cmd
+
+    def get_mode_options(self) -> list[str]:
+        """選択中のビルド方式に対応するNuitkaオプションを返す."""
+
+        mode_options = {
+            "standalone": ["--mode=standalone"],
+            "onefile": ["--mode=standalone", "--mode=onefile"],
+            "accelerated": ["--mode=accelerated"],
+        }
+        return mode_options[self.mode_dropdown.value]
 
     def get_gui_framework_options(self) -> list[str]:
         """選択中のGUIライブラリに対応するNuitkaオプションを返す."""
@@ -528,7 +553,7 @@ class NuitkaBuildGUI:
             )
             assert proc.stdout is not None
             for line in proc.stdout:
-                self.page.run_thread(lambda l=line.rstrip("\n"): self.add_log(l))
+                self.page.run_thread(lambda log_line=line.rstrip("\n"): self.add_log(log_line))
 
             return_code = proc.wait()
 
@@ -545,11 +570,13 @@ class NuitkaBuildGUI:
 
             self.page.run_thread(finish)
         except Exception as ex:
+            error_message = str(ex)
+
             def fail() -> None:
-                self.add_log(f"例外発生: {ex}")
+                self.add_log(f"例外発生: {error_message}")
                 self.status_text.value = "ビルド失敗"
                 self.status_text.color = ft.Colors.RED
-                self.error_text.value = f"エラー: {ex}"
+                self.error_text.value = f"エラー: {error_message}"
                 self.run_button.disabled = False
                 self.page.update()
 
