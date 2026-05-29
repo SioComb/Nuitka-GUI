@@ -1,5 +1,22 @@
 """NuitkaのビルドコマンドをGUIで生成・実行するアプリ."""
 
+# nuitka-project: --mode=onefile
+# nuitka-project: --output-dir={MAIN_DIRECTORY}/../dist_windows_Nuitka
+# nuitka-project: --output-filename=Nuitka-GUI
+# nuitka-project: --assume-yes-for-downloads
+# nuitka-project: --remove-output
+# nuitka-project: --include-package=flet
+# nuitka-project: --include-package=flet_desktop
+# nuitka-project: --include-package-data=flet
+# nuitka-project: --include-package-data=flet_desktop
+# nuitka-project-if: {OS} == "Windows":
+#    nuitka-project: --windows-console-mode=disable
+#    nuitka-project: --windows-icon-from-ico={MAIN_DIRECTORY}/assert/nuitka_builder_icon.ico
+#    nuitka-project: --product-name=Nuitka-GUI
+#    nuitka-project: --file-description=Nuitka-GUI
+#    nuitka-project: --file-version=0.1.1
+#    nuitka-project: --product-version=0.1.1
+
 from __future__ import annotations
 
 import shlex
