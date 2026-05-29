@@ -86,6 +86,9 @@ class NuitkaBuildGUI:
         self.page.window.height = 900
         self.page.scroll = ft.ScrollMode.AUTO
         self.page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
+        self.current_process: subprocess.Popen[str] | None = None
+        self.process_lock = threading.Lock()
+        self.stop_requested = False
 
         # 入力状態とエラーを画面に表示するコントロール。
         self.script_path_text = ft.Text("未選択", selectable=True)
@@ -93,6 +96,11 @@ class NuitkaBuildGUI:
         self.output_dir_text = ft.Text("未選択", selectable=True)
         self.status_text = ft.Text("準備完了", color=ft.Colors.BLUE)
         self.error_text = ft.Text("", color=ft.Colors.RED)
+        self.script_path_field = ft.TextField(
+            label="Pythonスクリプトパス",
+            hint_text=r"C:\path\to\main.py",
+            on_submit=self.apply_script_path,
+        )
 
         self.mode_dropdown = ft.Dropdown(
             label="ビルド方式",
@@ -193,10 +201,16 @@ class NuitkaBuildGUI:
         self.extra_options_field.expand = True
         self.command_preview.expand = True
         self.log_view.expand = True
+        self.script_path_field.expand = True
 
         self.run_button = ft.ElevatedButton("実行", on_click=self.run_nuitka)
+        self.stop_button = ft.ElevatedButton("中断", on_click=self.stop_nuitka, disabled=True)
+        self.clear_log_button = ft.OutlinedButton("実行ログクリア", on_click=self.clear_log)
+        self.save_log_button = ft.OutlinedButton("実行ログ出力", on_click=self.save_log)
+        self.open_output_button = ft.OutlinedButton("出力先を開く", on_click=self.open_output_dir)
 
         self.file_picker = ft.FilePicker()
+        self.page.overlay.append(self.file_picker)
 
         self.build_ui()
         self.update_command_preview()
@@ -215,6 +229,13 @@ class NuitkaBuildGUI:
                         on_click=self.pick_script,
                     ),
                     self.script_path_text,
+                ],
+                wrap=True,
+            ),
+            ft.Row(
+                [
+                    self.script_path_field,
+                    ft.ElevatedButton("指定", on_click=self.apply_script_path),
                 ],
                 wrap=True,
             ),
@@ -285,7 +306,17 @@ class NuitkaBuildGUI:
             ft.Text("12. コマンドプレビュー", weight=ft.FontWeight.BOLD),
             self.command_preview,
             ft.Text("13. 実行", weight=ft.FontWeight.BOLD),
-            ft.Row([self.run_button, self.status_text], wrap=True),
+            ft.Row(
+                [
+                    self.run_button,
+                    self.stop_button,
+                    self.clear_log_button,
+                    self.save_log_button,
+                    self.open_output_button,
+                    self.status_text,
+                ],
+                wrap=True,
+            ),
             self.error_text,
             self.log_view,
         )
@@ -293,6 +324,40 @@ class NuitkaBuildGUI:
     def add_log(self, message: str) -> None:
         self.log_view.value += message + "\n"
         self.log_view.update()
+
+    def clear_log(self, _: ft.ControlEvent) -> None:
+        self.log_view.value = ""
+        self.log_view.update()
+
+    async def save_log(self, _: ft.ControlEvent) -> None:
+        path = await self.file_picker.save_file(
+            dialog_title="実行ログを保存",
+            file_name="nuitka-build.log",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["log", "txt"],
+            src_bytes=(self.log_view.value or "").encode("utf-8"),
+        )
+        if path:
+            self.status_text.value = f"実行ログ出力完了: {path}"
+            self.status_text.color = ft.Colors.GREEN
+            self.page.update()
+
+    def open_output_dir(self, _: ft.ControlEvent) -> None:
+        output_dir = self.get_effective_output_dir()
+        if output_dir is None:
+            self.error_text.value = "エラー: 出力先を開くには Python スクリプトを選択してください。"
+            self.page.update()
+            return
+        if not output_dir.exists():
+            self.error_text.value = f"エラー: 出力先が見つかりません: {output_dir}"
+            self.add_log(f"[ERROR] Output directory not found: {output_dir}")
+            self.page.update()
+            return
+        try:
+            subprocess.Popen(["explorer", str(output_dir)], shell=False)
+        except Exception as ex:
+            self.error_text.value = f"エラー: 出力先を開けません: {ex}"
+            self.page.update()
 
     def on_setting_changed(self, _: ft.ControlEvent) -> None:
         self.update_command_preview()
@@ -316,6 +381,26 @@ class NuitkaBuildGUI:
             return None
         return Path(files[0].path)
 
+    def set_script_path(self, path: Path) -> bool:
+        if path.suffix.lower() != ".py":
+            self.error_text.value = "エラー: .py ファイルを選択してください。"
+            self.page.update()
+            return False
+        self.state.script_path = path
+        self.script_path_text.value = str(path)
+        self.script_path_field.value = str(path)
+        self.error_text.value = ""
+        self.update_command_preview()
+        return True
+
+    def apply_script_path(self, _: ft.ControlEvent) -> None:
+        path_text = (self.script_path_field.value or "").strip().strip('"')
+        if not path_text:
+            self.error_text.value = "エラー: Pythonスクリプトパスを入力してください。"
+            self.page.update()
+            return
+        self.set_script_path(Path(path_text))
+
     async def pick_script(self, _: ft.ControlEvent) -> None:
         files = await self.file_picker.pick_files(
             allow_multiple=False,
@@ -325,14 +410,7 @@ class NuitkaBuildGUI:
         path = self.get_selected_file_path(files)
         if path is None:
             return
-        if path.suffix.lower() != ".py":
-            self.error_text.value = "エラー: .py ファイルを選択してください。"
-            self.page.update()
-            return
-        self.state.script_path = path
-        self.script_path_text.value = str(path)
-        self.error_text.value = ""
-        self.update_command_preview()
+        self.set_script_path(path)
 
     async def pick_icon(self, _: ft.ControlEvent) -> None:
         files = await self.file_picker.pick_files(
@@ -416,7 +494,17 @@ class NuitkaBuildGUI:
         if self.state.script_path.suffix.lower() != ".py":
             return False, "エラー: 選択したファイルが .py ではありません。"
 
-        jobs_text = self.jobs_field.value.strip()
+        if not self.state.script_path.is_file():
+            return False, f"エラー: Pythonスクリプトが見つかりません: {self.state.script_path}"
+        if self.state.icon_path and not self.state.icon_path.is_file():
+            return False, f"エラー: アイコンファイルが見つかりません: {self.state.icon_path}"
+        for entry in self.state.data_entries:
+            if entry.kind == "file" and not entry.src.is_file():
+                return False, f"エラー: データファイルが見つかりません: {entry.src}"
+            if entry.kind == "dir" and not entry.src.is_dir():
+                return False, f"エラー: データフォルダが見つかりません: {entry.src}"
+
+        jobs_text = (self.jobs_field.value or "").strip()
         if jobs_text and (not jobs_text.isdigit() or int(jobs_text) <= 0):
             return False, "エラー: jobs は正の整数で入力してください。"
         return True, ""
@@ -426,7 +514,7 @@ class NuitkaBuildGUI:
 
         if self.state.script_path is None:
             return None
-        entered = self.output_filename_field.value.strip()
+        entered = (self.output_filename_field.value or "").strip()
         if not entered:
             entered = self.state.script_path.stem + ".exe"
         if not entered.lower().endswith(".exe"):
@@ -479,7 +567,7 @@ class NuitkaBuildGUI:
         if comp_opt:
             cmd.append(comp_opt)
 
-        jobs_text = self.jobs_field.value.strip()
+        jobs_text = (self.jobs_field.value or "").strip()
         if jobs_text:
             cmd.append(f"--jobs={jobs_text}")
 
@@ -489,7 +577,7 @@ class NuitkaBuildGUI:
             else:
                 cmd.append(f"--include-data-dir={entry.src}={entry.dest}")
 
-        extra_text = self.extra_options_field.value.strip()
+        extra_text = (self.extra_options_field.value or "").strip()
         if extra_text:
             cmd.extend(shlex.split(extra_text, posix=False))
 
@@ -518,6 +606,13 @@ class NuitkaBuildGUI:
         # Windows向けの安全なクォート。
         return subprocess.list2cmdline(cmd)
 
+    def get_effective_output_dir(self) -> Path | None:
+        if self.state.output_dir:
+            return self.state.output_dir
+        if self.state.script_path:
+            return self.state.script_path.parent
+        return None
+
     def update_command_preview(self) -> None:
         """入力検証の結果に合わせてコマンドプレビューを更新する."""
 
@@ -532,7 +627,7 @@ class NuitkaBuildGUI:
             self.error_text.value = ""
             cmd = self.build_command()
             self.command_preview.value = self.quote_for_preview(cmd)
-            self.page.update()
+        self.page.update()
 
     def run_nuitka(self, _: ft.ControlEvent) -> None:
         """ビルド処理をバックグラウンドスレッドで開始する."""
@@ -540,6 +635,7 @@ class NuitkaBuildGUI:
         valid, msg = self.validate_inputs()
         if not valid:
             self.error_text.value = msg
+            self.add_log(f"[ERROR] {msg}")
             self.page.update()
             return
 
@@ -549,10 +645,29 @@ class NuitkaBuildGUI:
         self.status_text.color = ft.Colors.ORANGE
         self.error_text.value = ""
         self.run_button.disabled = True
+        self.stop_button.disabled = False
+        self.stop_requested = False
         self.page.update()
 
         thread = threading.Thread(target=self._execute_build, args=(cmd,), daemon=True)
         thread.start()
+
+    def stop_nuitka(self, _: ft.ControlEvent) -> None:
+        with self.process_lock:
+            proc = self.current_process
+            self.stop_requested = True
+        if proc is None or proc.poll() is not None:
+            self.status_text.value = "中断対象の実行中プロセスはありません。"
+            self.stop_button.disabled = True
+            self.run_button.disabled = False
+            self.page.update()
+            return
+        self.status_text.value = "中断中..."
+        self.status_text.color = ft.Colors.ORANGE
+        self.stop_button.disabled = True
+        self.add_log("[INFO] Build interruption requested.")
+        self.page.update()
+        proc.terminate()
 
     def _execute_build(self, cmd: list[str]) -> None:
         """Nuitkaを実行し、標準出力をログ欄へ反映する."""
@@ -568,6 +683,8 @@ class NuitkaBuildGUI:
                 encoding="utf-8",
                 errors="replace",
             )
+            with self.process_lock:
+                self.current_process = proc
             assert proc.stdout is not None
             for line in proc.stdout:
                 self.page.run_thread(lambda log_line=line.rstrip("\n"): self.add_log(log_line))
@@ -576,18 +693,26 @@ class NuitkaBuildGUI:
 
             def finish() -> None:
                 self.add_log(f"\n終了コード: {return_code}")
-                if return_code == 0:
+                if self.stop_requested:
+                    self.status_text.value = "中断しました"
+                    self.status_text.color = ft.Colors.RED
+                elif return_code == 0:
                     self.status_text.value = "ビルド完了"
                     self.status_text.color = ft.Colors.GREEN
                 else:
                     self.status_text.value = "ビルド失敗"
                     self.status_text.color = ft.Colors.RED
                 self.run_button.disabled = False
+                self.stop_button.disabled = True
                 self.page.update()
 
+            with self.process_lock:
+                self.current_process = None
             self.page.run_thread(finish)
         except Exception as ex:
             error_message = str(ex)
+            with self.process_lock:
+                self.current_process = None
 
             def fail() -> None:
                 self.add_log(f"例外発生: {error_message}")
@@ -595,6 +720,7 @@ class NuitkaBuildGUI:
                 self.status_text.color = ft.Colors.RED
                 self.error_text.value = f"エラー: {error_message}"
                 self.run_button.disabled = False
+                self.stop_button.disabled = True
                 self.page.update()
 
             self.page.run_thread(fail)
